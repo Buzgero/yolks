@@ -124,7 +124,7 @@ var poll = function () {
 
 	ws.on("error", function (err) {
 		waiting = true;
-		console.log("Waiting for RCON to come up...");
+		console.log("Esperando a que se conecte el rcon");
 		setTimeout(poll, 5000);
 	});
 

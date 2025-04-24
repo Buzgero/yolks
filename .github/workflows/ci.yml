@@ -24,4 +24,4 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ghcr.io/Bugzero/pterodactyl-rust:custom
+          tags: ghcr.io/bugzero/pterodactyl-rust:custom

@@ -70,7 +70,7 @@ var waiting = true;
 // Timestamp when we first started waiting for RCON
 var waitingStart = null;
 // Threshold for waiting before forcing exit (3 seconds for testing)
-const WAIT_THRESHOLD = 3_000;
+const WAIT_THRESHOLD = 300_000; // 5 minutos en ms
 // Flag to track if we've already retried once
 var hasRetried = false;
 

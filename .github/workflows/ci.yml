@@ -12,7 +12,7 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v3
 
-      - name: Login to GitHub Container Registry
+      - name: Log in to GHCR
         uses: docker/login-action@v2
         with:
           registry: ghcr.io
@@ -22,11 +22,8 @@ jobs:
       - name: Build and push image
         uses: docker/build-push-action@v4
         with:
-          # Apunta al contexto que contiene Dockerfile, wrapper.js, entrypoint.sh, etc.
+          # Ajusta estas rutas según dónde esté tu Dockerfile
           context: ./games/rust
-          # Ruta relativa al Dockerfile dentro de tu repo
-          file: ./games/rust/Dockerfile
-          push: true
-          # Asegúrate de que tu usuario está en minúsculas
-          tags: ghcr.io/buzgero/pterodactyl-rust:custom
-
+          file:    ./games/rust/Dockerfile
+          push:    true
+          tags:    ghcr.io/buzgero/pterodactyl-rust:custom

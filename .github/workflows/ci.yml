@@ -3,6 +3,7 @@ name: Build & Publish Rust Wrapper Image
 on:
   push:
     branches: [ master ]
+  workflow_dispatch:
 
 jobs:
   build-and-push:
@@ -21,7 +22,11 @@ jobs:
       - name: Build and push image
         uses: docker/build-push-action@v4
         with:
-          context: .
-          file: ./Dockerfile
+          # Apunta al contexto que contiene Dockerfile, wrapper.js, entrypoint.sh, etc.
+          context: ./games/rust
+          # Ruta relativa al Dockerfile dentro de tu repo
+          file: ./games/rust/Dockerfile
           push: true
-          tags: ghcr.io/bugzero/pterodactyl-rust:custom
+          # Asegúrate de que tu usuario está en minúsculas
+          tags: ghcr.io/buzgero/pterodactyl-rust:custom
+

@@ -29,6 +29,8 @@ function filter(data) {
         if (seenPercentage[percentage]) return;
         seenPercentage[percentage] = true;
     }
+    // Update last console output time
+    lastConsoleTime = Date.now();
     console.log(str);
 }
 
@@ -67,12 +69,23 @@ process.on('exit', function (code) {
 
 // --- RCON retry threshold logic ---
 var waiting = true;
-// Timestamp when we first started waiting for RCON
 var waitingStart = null;
-// Threshold for waiting before forcing exit (3 seconds for testing)
-const WAIT_THRESHOLD = 300_000; // 5 minutos en ms
-// Flag to track if we've already retried once
+const WAIT_THRESHOLD = 300000; // 5 minutes in ms
 var hasRetried = false;
+
+// --- Console inactivity watchdog ---
+// Timestamp of last console output
+var lastConsoleTime = Date.now();
+// Inactivity threshold (5 minutes)
+const INACTIVITY_THRESHOLD = 300000; // 5 minutes in ms
+// Check every 30 seconds
+setInterval(() => {
+    const idle = Date.now() - lastConsoleTime;
+    if (idle >= INACTIVITY_THRESHOLD) {
+        console.log(`⚠️ No console output for ${Math.round(idle/1000)}s, forcing restart…`);
+        process.exit(1);
+    }
+}, 30000);
 
 var poll = function () {
     function createPacket(command) {
@@ -92,10 +105,7 @@ var poll = function () {
     ws.on("open", function open() {
         console.log("Connected to RCON. Generating the map now. Please wait until the server status switches to \"Running\".");
         waiting = false;
-
-        // Hack to fix broken console output
         ws.send(createPacket('status'));
-
         process.stdin.removeListener('data', initialListener);
         gameProcess.stdout.removeListener('data', filter);
         gameProcess.stderr.removeListener('data', filter);
@@ -112,6 +122,8 @@ var poll = function () {
                 fs.appendFile("latest.log", "\n" + json.Message, (err) => {
                     if (err) console.log("Callback error in appendFile:" + err);
                 });
+                // Update last console time on each RCON message
+                lastConsoleTime = Date.now();
             } else {
                 console.log("Error: Invalid JSON received");
             }
@@ -123,16 +135,14 @@ var poll = function () {
     ws.on("error", function (err) {
         const now = Date.now();
         if (!waitingStart) {
-            // First failure: start timer
             waitingStart = now;
-            console.log("Waiting to connect RCON...");
+            console.log("Waiting for RCON to come up...");
             setTimeout(poll, 5000);
         } else if (now - waitingStart >= WAIT_THRESHOLD) {
             console.log(`🔥 WAIT_THRESHOLD of ${WAIT_THRESHOLD} ms exceeded, forcing exit for restart…`);
             process.exit(1);
         } else {
-            // Second failure but under threshold: retry once more
-            console.log("Waiting to connect RCON... (retry)");
+            console.log("Waiting for RCON to come up... (retry)");
             hasRetried = true;
             setTimeout(poll, 5000);
         }

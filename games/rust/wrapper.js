@@ -5,13 +5,20 @@ const { exec } = require("child_process");
 const WebSocket = require("ws");
 
 // --- Configuration ---
-const WAIT_THRESHOLD = 300000;       // 5 minutes in ms for RCON connect
-const INACTIVITY_THRESHOLD = 300000; // 5 minutes in ms for console output
+// --- Configuration (test thresholds: 1 minute) ---
+const WAIT_THRESHOLD = 60000;       // 1 minute in ms for RCON connect (test)
+const INACTIVITY_THRESHOLD = 60000; // 1 minute in ms for console output (test) // 5 minutes in ms for console output
 const WATCH_INTERVAL = 30000;        // 30 seconds interval
 
 let lastConsoleTime = Date.now();
 let waitingStart = null;
 let exited = false;
+
+// Monkey-patch console to update lastConsoleTime on any log
+const _origLog = console.log;
+console.log = (...args) => { lastConsoleTime = Date.now(); _origLog(...args); };
+const _origError = console.error;
+console.error = (...args) => { lastConsoleTime = Date.now(); _origError(...args); };
 
 // --- Initialize latest.log (overwrite) ---
 fs.writeFileSync("latest.log", "");

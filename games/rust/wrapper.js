@@ -8,14 +8,13 @@ const WebSocket = require("ws");
 const WAIT_THRESHOLD = 300000;       // 5 minutes in ms for RCON connect
 const INACTIVITY_THRESHOLD = 300000; // 5 minutes in ms for console output
 const WATCH_INTERVAL = 30000;        // 30 seconds interval
+
 let lastConsoleTime = Date.now();
 let waitingStart = null;
 let exited = false;
 
-// --- Initialize latest.log ---
-fs.writeFile("latest.log", "", (err) => {
-    if (err) console.log("Callback error in writeFile: " + err);
-});
+// --- Initialize latest.log (overwrite) ---
+fs.writeFileSync("latest.log", "");
 
 // --- Parse startup command ---
 const args = process.argv.slice(process.execArgv.length + 2);
@@ -95,18 +94,16 @@ function poll() {
     });
 
     ws.on("message", (data) => {
-        // Update timestamp on any RCON data
         lastConsoleTime = Date.now();
         const msgStr = data.toString();
         try {
             const parsed = JSON.parse(msgStr);
             if (parsed.Message) {
                 console.log(parsed.Message);
-                fs.appendFile("latest.log", "
-" + parsed.Message, (err) => err && console.log(err));
+                fs.appendFileSync("latest.log", "\n" + parsed.Message);
             }
         } catch {
-            // Not JSON - print raw RCON output
+            // Raw output for non-JSON RCON messages
             console.log(msgStr);
         }
     });

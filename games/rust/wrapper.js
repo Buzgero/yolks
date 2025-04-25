@@ -5,8 +5,8 @@ const fs = require("fs");
 const { exec } = require("child_process");
 const WebSocket = require("ws");
 
-const MAX_IDLE = 65 * 1000;        // 30 segundos (prueba). En prod: 5 * 60 * 1000
-const WATCHDOG_INTERVAL = 5 * 1000; // Chequeo cada 5s (prueba). En prod: 30 * 1000
+const MAX_IDLE = 5 * 60 * 1000;  // 5m
+const WATCHDOG_INTERVAL = 60 * 1000; // 1m 
 
 
 let startupCmd    = "";

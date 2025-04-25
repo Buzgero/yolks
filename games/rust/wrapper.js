@@ -67,17 +67,17 @@ process.on('exit', function (code) {
     gameProcess.kill('SIGTERM');
 });
 
-// --- RCON retry threshold logic ---
+// --- RCON retry threshold logic (5 minutos) ---
 var waiting = true;
 var waitingStart = null;
-const WAIT_THRESHOLD = 300000; // 5 minutes in ms
+const WAIT_THRESHOLD = 300000; // 5 minutos in ms
 var hasRetried = false;
 
-// --- Console inactivity watchdog ---
+// --- Console inactivity watchdog (5 minutos) ---
 // Timestamp of last console output
 var lastConsoleTime = Date.now();
-// Inactivity threshold (5 minutes)
-const INACTIVITY_THRESHOLD = 300000; // 5 minutes in ms
+// Inactivity threshold
+const INACTIVITY_THRESHOLD = 300000; // 5 minutos in ms
 // Check every 30 seconds
 setInterval(() => {
     const idle = Date.now() - lastConsoleTime;
@@ -106,12 +106,15 @@ var poll = function () {
         console.log("Connected to RCON. Generating the map now. Please wait until the server status switches to \"Running\".");
         waiting = false;
         ws.send(createPacket('status'));
+        // After connecting, continue filtering game console output to track activity
         process.stdin.removeListener('data', initialListener);
-        gameProcess.stdout.removeListener('data', filter);
-        gameProcess.stderr.removeListener('data', filter);
+        // Do NOT remove stdout/stderr listeners to keep updating lastConsoleTime
+        // gameProcess.stdout.removeListener('data', filter);
+        // gameProcess.stderr.removeListener('data', filter);
         process.stdin.on('data', function (text) {
             ws.send(createPacket(text));
         });
+    });
     });
 
     ws.on("message", function (data, flags) {

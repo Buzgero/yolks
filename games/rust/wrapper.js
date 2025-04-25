@@ -95,15 +95,19 @@ function poll() {
     });
 
     ws.on("message", (data) => {
+        // Update timestamp on any RCON data
+        lastConsoleTime = Date.now();
+        const msgStr = data.toString();
         try {
-            const msg = JSON.parse(data).Message;
-            if (msg) {
-                console.log(msg);
-                fs.appendFile("latest.log", "\n" + msg, (err) => err && console.log(err));
-                lastConsoleTime = Date.now();
+            const parsed = JSON.parse(msgStr);
+            if (parsed.Message) {
+                console.log(parsed.Message);
+                fs.appendFile("latest.log", "
+" + parsed.Message, (err) => err && console.log(err));
             }
-        } catch (e) {
-            console.log("Error parsing RCON message", e);
+        } catch {
+            // Not JSON - print raw RCON output
+            console.log(msgStr);
         }
     });
 

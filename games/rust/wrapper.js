@@ -1,163 +1,131 @@
 #!/usr/bin/env node
 
-var startupCmd = "";
 const fs = require("fs");
+const { exec } = require("child_process");
+const WebSocket = require("ws");
+
+// --- Configuration ---
+const WAIT_THRESHOLD = 300000;       // 5 minutes in ms for RCON connect
+const INACTIVITY_THRESHOLD = 300000; // 5 minutes in ms for console output
+const WATCH_INTERVAL = 30000;        // 30 seconds interval
+let lastConsoleTime = Date.now();
+let waitingStart = null;
+let exited = false;
+
+// --- Initialize latest.log ---
 fs.writeFile("latest.log", "", (err) => {
-    if (err) console.log("Callback error in appendFile:" + err);
+    if (err) console.log("Callback error in writeFile: " + err);
 });
 
-var args = process.argv.splice(process.execArgv.length + 2);
-for (var i = 0; i < args.length; i++) {
-    if (i === args.length - 1) {
-        startupCmd += args[i];
-    } else {
-        startupCmd += args[i] + " ";
-    }
-}
-
-if (startupCmd.length < 1) {
+// --- Parse startup command ---
+const args = process.argv.slice(process.execArgv.length + 2);
+const startupCmd = args.join(" ");
+if (!startupCmd) {
     console.log("Error: Please specify a startup command.");
-    process.exit();
+    process.exit(1);
 }
 
+// --- Percentage dedupe for prefab bundles ---
 const seenPercentage = {};
-
 function filter(data) {
     const str = data.toString();
-    if (str.startsWith("Loading Prefab Bundle ")) { // Rust seems to spam the same percentage, so filter out any duplicates.
-        const percentage = str.substr("Loading Prefab Bundle ".length);
-        if (seenPercentage[percentage]) return;
-        seenPercentage[percentage] = true;
+    if (str.startsWith("Loading Prefab Bundle ")) {
+        const pct = str.substr("Loading Prefab Bundle ".length);
+        if (seenPercentage[pct]) return;
+        seenPercentage[pct] = true;
     }
-    // Update last console output time
     lastConsoleTime = Date.now();
     console.log(str);
 }
 
-const exec = require("child_process").exec;
+// --- Start the game process ---
 console.log("Starting Rust...");
-
-var exited = false;
 const gameProcess = exec(startupCmd);
-gameProcess.stdout.on('data', filter);
-gameProcess.stderr.on('data', filter);
-gameProcess.on('exit', function (code, signal) {
+gameProcess.stdout.on("data", filter);
+gameProcess.stderr.on("data", filter);
+gameProcess.on("exit", (code) => {
     exited = true;
-    if (code) {
-        console.log("Main game process exited with code " + code);
-        // process.exit(code);
-    }
+    if (code) console.log("Main game process exited with code " + code);
 });
 
+// --- Handle stdin until RCON connects ---
 function initialListener(data) {
-    const command = data.toString().trim();
-    if (command === 'quit') {
-        gameProcess.kill('SIGTERM');
-    } else {
-        console.log('Unable to run "' + command + '" due to RCON not being connected yet.');
-    }
+    const cmd = data.toString().trim();
+    if (cmd === "quit") gameProcess.kill("SIGTERM");
+    else console.log(`Unable to run "${cmd}" until RCON connects.`);
 }
 process.stdin.resume();
 process.stdin.setEncoding("utf8");
-process.stdin.on('data', initialListener);
+process.stdin.on("data", initialListener);
 
-process.on('exit', function (code) {
-    if (exited) return;
-    console.log("Received request to stop the process, stopping the game...");
-    gameProcess.kill('SIGTERM');
+// --- Cleanup on wrapper exit ---
+process.on("exit", () => {
+    if (!exited) {
+        console.log("Received stop request, terminating game process...");
+        gameProcess.kill("SIGTERM");
+    }
 });
 
-// --- RCON retry threshold logic (5 minutos) ---
-var waiting = true;
-var waitingStart = null;
-const WAIT_THRESHOLD = 300000; // 5 minutos in ms
-var hasRetried = false;
-
-// --- Console inactivity watchdog (5 minutos) ---
-// Timestamp of last console output
-var lastConsoleTime = Date.now();
-// Inactivity threshold
-const INACTIVITY_THRESHOLD = 300000; // 5 minutos in ms
-// Check every 30 seconds
+// --- Inactivity watchdog ---
 setInterval(() => {
-    const idle = Date.now() - lastConsoleTime;
-    if (idle >= INACTIVITY_THRESHOLD) {
-        console.log(`⚠️ No console output for ${Math.round(idle/1000)}s, forcing restart…`);
+    if (Date.now() - lastConsoleTime >= INACTIVITY_THRESHOLD) {
+        console.log(`⚠️ No console output for ${Math.round((Date.now() - lastConsoleTime)/1000)}s, forcing restart...`);
         process.exit(1);
     }
-}, 30000);
+}, WATCH_INTERVAL);
 
-var poll = function () {
-    function createPacket(command) {
-        return JSON.stringify({
-            Identifier: -1,
-            Message: command,
-            Name: "WebRcon"
-        });
-    }
+// --- RCON polling logic ---
+function poll() {
+    const host = process.env.RCON_IP || "localhost";
+    const port = process.env.RCON_PORT;
+    const pass = process.env.RCON_PASS;
+    const ws = new WebSocket(`ws://${host}:${port}/${pass}`);
 
-    var serverHostname = process.env.RCON_IP ? process.env.RCON_IP : "localhost";
-    var serverPort = process.env.RCON_PORT;
-    var serverPassword = process.env.RCON_PASS;
-    var WebSocket = require("ws");
-    var ws = new WebSocket("ws://" + serverHostname + ":" + serverPort + "/" + serverPassword);
+    ws.on("open", () => {
+        console.log("Connected to RCON. Please wait until server status is Running.");
+        waitingStart = null;
+        lastConsoleTime = Date.now();
+        ws.send(JSON.stringify({ Identifier: -1, Message: "status", Name: "WebRcon" }));
 
-    ws.on("open", function open() {
-        console.log("Connected to RCON. Generating the map now. Please wait until the server status switches to \"Running\".");
-        waiting = false;
-        ws.send(createPacket('status'));
-        // After connecting, continue filtering game console output to track activity
-        process.stdin.removeListener('data', initialListener);
-        // Do NOT remove stdout/stderr listeners to keep updating lastConsoleTime
-        // gameProcess.stdout.removeListener('data', filter);
-        // gameProcess.stderr.removeListener('data', filter);
-        process.stdin.on('data', function (text) {
-            ws.send(createPacket(text));
+        // Switch stdin to RCON
+        process.stdin.removeListener("data", initialListener);
+        process.stdin.on("data", (text) => {
+            ws.send(JSON.stringify({ Identifier: -1, Message: text, Name: "WebRcon" }));
         });
     });
-    });
 
-    ws.on("message", function (data, flags) {
+    ws.on("message", (data) => {
         try {
-            var json = JSON.parse(data);
-            if (json && json.Message) {
-                console.log(json.Message);
-                fs.appendFile("latest.log", "\n" + json.Message, (err) => {
-                    if (err) console.log("Callback error in appendFile:" + err);
-                });
-                // Update last console time on each RCON message
+            const msg = JSON.parse(data).Message;
+            if (msg) {
+                console.log(msg);
+                fs.appendFile("latest.log", "\n" + msg, (err) => err && console.log(err));
                 lastConsoleTime = Date.now();
-            } else {
-                console.log("Error: Invalid JSON received");
             }
         } catch (e) {
-            console.log(e);
+            console.log("Error parsing RCON message", e);
         }
     });
 
-    ws.on("error", function (err) {
+    ws.on("error", () => {
         const now = Date.now();
         if (!waitingStart) {
             waitingStart = now;
             console.log("Waiting for RCON to come up...");
             setTimeout(poll, 5000);
         } else if (now - waitingStart >= WAIT_THRESHOLD) {
-            console.log(`🔥 WAIT_THRESHOLD of ${WAIT_THRESHOLD} ms exceeded, forcing exit for restart…`);
+            console.log(`🔥 RCON connect timeout (${WAIT_THRESHOLD} ms) exceeded, exiting...`);
             process.exit(1);
         } else {
-            console.log("Waiting for RCON to come up... (retry)");
-            hasRetried = true;
+            console.log("Retrying RCON connection...");
             setTimeout(poll, 5000);
         }
     });
 
-    ws.on("close", function () {
-        if (!waiting) {
-            console.log("Connection to server closed.");
-            exited = true;
-            process.exit();
-        }
+    ws.on("close", () => {
+        console.log("RCON connection closed.");
+        if (!exited) process.exit(1);
     });
-};
+}
 
 poll();

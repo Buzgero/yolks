@@ -14,9 +14,7 @@ let lastConsoleTime = Date.now();
 let waitingStart = null;
 let exited = false;
 
-// Monkey-patch console to update lastConsoleTime on any log
-const _origLog = console.log;
-console.log = (...args) => { lastConsoleTime = Date.now(); _origLog(...args); };
+
 const _origError = console.error;
 console.error = (...args) => { lastConsoleTime = Date.now(); _origError(...args); };
 
@@ -72,10 +70,12 @@ process.on("exit", () => {
     }
 });
 
-// --- Inactivity watchdog ---
+// --- Inactivity watchdog (with debug) ---
 setInterval(() => {
-    if (Date.now() - lastConsoleTime >= INACTIVITY_THRESHOLD) {
-        console.log(`⚠️ No console output for ${Math.round((Date.now() - lastConsoleTime)/1000)}s, forcing restart...`);
+    const idle = Date.now() - lastConsoleTime;
+    console.log(`🕒 [Watchdog] Idle time: ${Math.round(idle/1000)}s`);
+    if (idle >= INACTIVITY_THRESHOLD) {
+        console.log(`⚠️ No console output for ${Math.round(idle/1000)}s (>= ${Math.round(INACTIVITY_THRESHOLD/1000)}s), forcing restart...`);
         process.exit(1);
     }
 }, WATCH_INTERVAL);

@@ -1,87 +1,66 @@
 #!/usr/bin/env node
 
-/**
- * Ultra-debuggable wrapper.js para Rust en Pterodactyl
- * Incluye trazas detalladas en cada paso para localizar por qué no reinicia.
- */
-
 const fs = require("fs");
 const { exec } = require("child_process");
 const WebSocket = require("ws");
-const path = require("path");
 
-// --- CONFIGURACIÓN DE UMBRALES (ms) ---
-const WAIT_THRESHOLD       = 60_000;  // 1 min para probar timeout de RCON
-const INACTIVITY_THRESHOLD = 60_000;  // 1 min sin salida de consola
-const WATCH_INTERVAL       = 5_000;   // Chequeos cada 5 s
+// --- Configuration ---
+// Test thresholds: 1 minute for RCON/inactivity, frequent debug
+const WAIT_THRESHOLD = 60000;        // 1 minute in ms for RCON connect
+const INACTIVITY_THRESHOLD = 60000;  // 1 minute in ms for console output
+const WATCH_INTERVAL = 5000;         // 5 seconds interval for watchdog logs
 
-// --- VARIABLES DE ESTADO ---
-let waitingStart    = null;          // Timestamp de primer error RCON
-let lastConsoleTime = Date.now();    // Timestamp de última salida (stdout, stderr, RCON)
-let hasEverOpened   = false;         // Marca si RCON llegó a abrir
-let gameProcess     = null;
+// --- State variables ---
+let lastConsoleTime = Date.now();
+let waitingStart = null;
+let exited = false;
 
-// --- Función de logging timestamped ---
-function logDbg(...args) {
-    const ts = new Date().toISOString();
-    console.log(`[${ts}]`, ...args);
-}
+// Debug: script start
+console.log(`🚀 Wrapper started at ${new Date().toISOString()}`);
+console.log(`⚙️ Config: WAIT_THRESHOLD=${WAIT_THRESHOLD}ms, INACTIVITY_THRESHOLD=${INACTIVITY_THRESHOLD}ms, WATCH_INTERVAL=${WATCH_INTERVAL}ms`);
 
-// --- Reinicia latest.log ---
-try {
-    fs.writeFileSync("latest.log", "", "utf8");
-    logDbg("Init", "latest.log reiniciado");
-} catch (e) {
-    logDbg("Init", "ERROR al resetear latest.log:", e);
-}
+// --- Initialize latest.log (overwrite) ---
+fs.writeFileSync("latest.log", "");
 
-// --- Parseo de comando de arranque ---
-const rawArgs = process.argv.slice(process.execArgv.length + 2);
-if (rawArgs.length === 0) {
-    logDbg("Init", "ERROR: No se especificó startup command. Abortando.");
+// --- Parse startup command ---
+const args = process.argv.slice(process.execArgv.length + 2);
+const startupCmd = args.join(" ");
+if (!startupCmd) {
+    console.log("Error: Please specify a startup command.");
     process.exit(1);
 }
-const startupCmd = rawArgs.join(" ");
-logDbg("Init", "Comando de arranque:", startupCmd);
+console.log(`🔧 Startup command: ${startupCmd}`);
 
-// --- Mostrar variables de entorno relevantes ---
-logDbg("Init", "RCON_IP =", process.env.RCON_IP);
-logDbg("Init", "RCON_PORT =", process.env.RCON_PORT);
-logDbg("Init", "RCON_PASS =", process.env.RCON_PASS);
-
-// --- Función de filtrado de salida del juego ---
-const seenPct = {};
+// --- Percentage dedupe for prefab bundles ---
+const seenPercentage = {};
 function filter(data) {
-    const str = data.toString().trim();
+    const str = data.toString();
     if (str.startsWith("Loading Prefab Bundle ")) {
-        const pct = str.substr(23);
-        if (seenPct[pct]) {
-            logDbg("Filter", `Descartado porcentaje duplicado ${pct}`);
-            return;
-        }
-        seenPct[pct] = true;
+        const pct = str.substr("Loading Prefab Bundle ".length);
+        if (seenPercentage[pct]) return;
+        seenPercentage[pct] = true;
     }
     lastConsoleTime = Date.now();
-    logDbg("Gamestdout", str);
+    console.log(str);
 }
 
-// --- Arrancar proceso de RustDedicated ---
-logDbg("Game", "Lanzando proceso de juego...");
-gameProcess = exec(startupCmd, { shell: true });
+// --- Start the game process ---
+console.log("🎮 Starting Rust Dedicated server...");
+const gameProcess = exec(startupCmd);
 gameProcess.stdout.on("data", filter);
 gameProcess.stderr.on("data", filter);
-gameProcess.on("exit", (code, sig) => {
-    logDbg("Game", `Proceso de juego EXIT code=${code}, signal=${sig}`);
+gameProcess.on("exit", (code) => {
+    exited = true;
+    console.log(`⚠️ Game process exited with code ${code}`);
 });
 
-// --- Listener antes de RCON ready ---
+// --- Handle stdin until RCON connects ---
 function initialListener(data) {
     const cmd = data.toString().trim();
-    lastConsoleTime = Date.now();
-    logDbg("Listener", `stdin recibido pre-RCON: "${cmd}"`);
     if (cmd === "quit") {
-        logDbg("Listener", "kill -SIGTERM al juego");
-        gameProcess.kill("SIGTERM");
+        gameProcess.kill('SIGTERM');
+    } else {
+        console.log(`Unable to run "${cmd}" until RCON connects.`);
     }
 }
 process.stdin.resume();
@@ -89,110 +68,83 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", initialListener);
 
 // --- Cleanup on wrapper exit ---
-process.on("exit", code => {
-    logDbg("Exit", `Wrapper exiting with code ${code}`);
-    if (gameProcess && !gameProcess.killed) {
-        logDbg("Exit", "Matando proceso de juego...");
-        gameProcess.kill("SIGTERM");
+process.on("exit", () => {
+    if (!exited) {
+        console.log("🛑 Received stop request, terminating game process...");
+        gameProcess.kill('SIGTERM');
     }
 });
 
-// --- Watchdog combinado RCON + inactividad consola ---
+// --- Inactivity watchdog (with frequent debug) ---
+console.log("⏱️ Starting inactivity watchdog...");
 setInterval(() => {
-    const now = Date.now();
-    const idleSec = Math.round((now - lastConsoleTime) / 1000);
-    const rconSec = waitingStart ? Math.round((now - waitingStart) / 1000) : 0;
-    logDbg("Watchdog", `Idle consola=${idleSec}s${waitingStart ? ` | RCON espera=${rconSec}s` : ""}`);
-
-    if (now - lastConsoleTime >= INACTIVITY_THRESHOLD) {
-        logDbg("Watchdog", `⚠️ SIN SALIDA DE CONSOLA ${idleSec}s (>=${INACTIVITY_THRESHOLD/1000}s). process.exit(1)`);
-        process.exit(1);
-    }
-    if (waitingStart && now - waitingStart >= WAIT_THRESHOLD) {
-        logDbg("Watchdog", `⚠️ RCON rostando ${rconSec}s (>=${WAIT_THRESHOLD/1000}s). process.exit(1)`);
+    const idle = Date.now() - lastConsoleTime;
+    console.log(`🕒 [Watchdog] Idle time: ${Math.round(idle/1000)}s`);
+    if (idle >= INACTIVITY_THRESHOLD) {
+        console.log(`⚠️ No console output for ${Math.round(idle/1000)}s (>= ${Math.round(INACTIVITY_THRESHOLD/1000)}s), forcing restart...`);
         process.exit(1);
     }
 }, WATCH_INTERVAL);
 
-// --- Función poll RCON ---
+// --- RCON polling logic ---
 function poll() {
+    console.log(`🔎 [RCON] Polling for connection at ${new Date().toISOString()}`);
     const host = process.env.RCON_IP || "localhost";
     const port = process.env.RCON_PORT;
     const pass = process.env.RCON_PASS;
-    const url  = `ws://${host}:${port}/${pass}`;
-
-    logDbg("RCON", `Intentando conectar WS a ${url}`);
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(`ws://${host}:${port}/${pass}`);
 
     ws.on("open", () => {
-        const now = Date.now();
-        const rconSec = waitingStart ? Math.round((now - waitingStart)/1000) : 0;
-        logDbg("RCON", `OPEN tras ${rconSec}s. Limpio estado y habilito stdin->ws`);
-        hasEverOpened = true;
+        console.log("✅ Connected to RCON. Awaiting server status 'Running'.");
         waitingStart = null;
         lastConsoleTime = Date.now();
+        ws.send(JSON.stringify({ Identifier: -1, Message: "status", Name: "WebRcon" }));
 
-        // envio status
-        const pkt = JSON.stringify({ Identifier:-1, Message:"status", Name:"WebRcon" });
-        ws.send(pkt);
-        logDbg("RCON", "Enviado status packet");
-
-        // remuevo listeners antiguos
+        // Switch stdin to RCON
         process.stdin.removeListener("data", initialListener);
-        gameProcess.stdout.removeListener("data", filter);
-        gameProcess.stderr.removeListener("data", filter);
-
-        // vinculo stdin->ws
-        process.stdin.on("data", d => {
-            const cmd = d.toString().trim();
-            lastConsoleTime = Date.now();
-            const packet = JSON.stringify({ Identifier:-1, Message:cmd, Name:"WebRcon" });
-            ws.send(packet);
-            logDbg("RCON", `stdin->RCON: ${cmd}`);
+        process.stdin.on("data", (text) => {
+            console.log(`📤 Sending RCON command: ${text.trim()}`);
+            ws.send(JSON.stringify({ Identifier: -1, Message: text, Name: "WebRcon" }));
         });
     });
 
-    ws.on("message", msg => {
-        const str = msg.toString().trim();
+    ws.on("message", (data) => {
         lastConsoleTime = Date.now();
-        logDbg("RCONmsg", `Raw: ${str}`);
+        const msgStr = data.toString();
         try {
-            const obj = JSON.parse(str);
-            if (obj.Message) {
-                logDbg("RCONmsg", `JSON.Message: ${obj.Message}`);
-                fs.appendFileSync("latest.log", "\n" + obj.Message, "utf8");
-            } else {
-                logDbg("RCONmsg", "JSON sin campo Message:", obj);
+            const parsed = JSON.parse(msgStr);
+            if (parsed.Message) {
+                console.log(`📥 RCON Message: ${parsed.Message}`);
+                fs.appendFileSync("latest.log", "\n" + parsed.Message);
             }
-        } catch (e) {
-            logDbg("RCONmsg", "Texto plano:", str);
-            fs.appendFileSync("latest.log", "\n" + str, "utf8");
+        } catch {
+            console.log(`📥 RCON Raw: ${msgStr}`);
         }
     });
 
-    ws.on("error", err => {
-        lastConsoleTime = Date.now();
-        logDbg("RCON", "ERROR WS:", err.message);
+    ws.on("error", (err) => {
+        console.log(`❌ [RCON] Connection error: ${err.message}`);
+        const now = Date.now();
         if (!waitingStart) {
-            waitingStart = Date.now();
-            logDbg("RCON", "Primer error: inicio cronómetro de WAIT_THRESHOLD");
+            waitingStart = now;
+            console.log("🔄 Waiting for RCON to come up...");
+            setTimeout(poll, 5000);
         } else {
-            const sec = Math.round((Date.now() - waitingStart)/1000);
-            logDbg("RCON", `Error adicional tras ${sec}s de espera`);
+            const elapsed = now - waitingStart;
+            console.log(`🕒 [RCON Watchdog] Elapsed: ${Math.round(elapsed/1000)}s`);
+            if (elapsed >= WAIT_THRESHOLD) {
+                console.log(`🔥 RCON connect timeout (${Math.round(WAIT_THRESHOLD/1000)}s) exceeded, exiting...`);
+                process.exit(1);
+            } else {
+                console.log("🔄 Retrying RCON connection...");
+                setTimeout(poll, 5000);
+            }
         }
-        logDbg("RCON", "setTimeout(poll,5000)");
-        setTimeout(poll, 5000);
     });
 
-    ws.on("close", (code, reason) => {
-        logDbg("RCON", `CLOSE code=${code}, reason=${reason||"none"}`);
-        if (hasEverOpened) {
-            logDbg("RCON", "WS cerró tras OPEN -> process.exit(0)");
-            process.exit(0);
-        }
+    ws.on("close", () => {
+        console.log("⚠️ [RCON] Connection closed.");
+        if (!exited) process.exit(1);
     });
 }
-
-// --- Iniciar poll por primera vez ---
-logDbg("RCON", "Iniciando poll()");
 poll();

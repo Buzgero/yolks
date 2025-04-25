@@ -4,8 +4,8 @@ const fs = require("fs");
 const { exec } = require("child_process");
 const WebSocket = require("ws");
 
-const MAX_IDLE = 30 * 1000; // 30 segundos en ms
-const WATCHDOG_INTERVAL = 5 * 1000; // cada 30s
+const MAX_IDLE = 10 * 1000; // 30 segundos en ms
+const WATCHDOG_INTERVAL = 1 * 1000; // cada 30s
 
 // --------------------------------------------------
 // Variables de control
